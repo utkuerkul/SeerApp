@@ -23,11 +23,8 @@ from joblib import Parallel, delayed
 import time
 import logging
 from optuna.pruners import SuccessiveHalvingPruner
-from tbats import TBATS
-from prophet import Prophet
 from bsts import BSTS
-import pmdarima as pm
-from pmdarima import auto_arima
+
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -172,40 +169,45 @@ class StatisticalMethods:
 
         return model, train_metrics, test_metrics, test_predictions, train_predictions
 
-
 #Çok uzun sürdüğü için train ve hiperparametre optimizasyonu çözüm bulana kadar çıkardım.
-    def fit_sarimax(self, train, test, target_column, frequency, n_trials=12):
-        try:
-            # Use auto_arima to find the best parameters
-            best_model = auto_arima(
-                train[target_column],
-                seasonal=True,
-                m=frequency,  # frequency (seasonality)
-                stepwise=True,
-                suppress_warnings=True,
-                error_action='ignore',  # Ignore errors and continue searching
-                trace=False,
-                n_jobs=-1,  # Run in parallel
-                scoring='mae'  # Optimize based on MAE
-            )
+    def fit_sarimax(self, train, test, target_column, frequency_int, n_trials=10):
+        def objective(trial):
+            p = trial.suggest_int('p', 0, 2)  # Narrowed range
+            d = trial.suggest_int('d', 0, 1)  # Narrowed range
+            q = trial.suggest_int('q', 0, 2)  # Narrowed range
+            P = trial.suggest_int('P', 0, 2)  # Narrowed range
+            D = trial.suggest_int('D', 0, 1)  # Narrowed range
+            Q = trial.suggest_int('Q', 0, 1)  # Narrowed range
+            s = frequency_int  # frequency_int doğrudan kullanılıyor
 
-            # Fit the best model
-            best_model.fit(train[target_column])
+            try:
+                model = SARIMAX(train[target_column], order=(p, d, q), seasonal_order=(P, D, Q, s)).fit(disp=False)
+                test_predictions = model.get_forecast(steps=len(test)).predicted_mean
+                score = mean_absolute_error(test[target_column], test_predictions)
+                return score
+            except Exception as e:
+                print(f"Exception for SARIMAX({p},{d},{q}) with seasonal_order=({P},{D},{Q},{s}): {e}")
+                return float("inf")  # Return a high score for failed trials
 
-            # Get predictions
-            train_predictions = best_model.predict_in_sample()
-            test_predictions = best_model.predict(n_periods=len(test))
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials)
 
-            # Calculate metrics
-            train_metrics = self.calculate_metrics(train[target_column], train_predictions)
-            test_metrics = self.calculate_metrics(test[target_column], test_predictions)
+        best_params = study.best_params
+        print("Best Parameters for SARIMAX: ", best_params)
 
-            return best_model, train_metrics, test_metrics, test_predictions, train_predictions
+        # Train the final model with the best parameters, using frequency_int for `s`
+        model = SARIMAX(train[target_column],
+                        order=(best_params['p'], best_params['d'], best_params['q']),
+                        seasonal_order=(best_params['P'], best_params['D'], best_params['Q'], frequency_int)).fit(
+            disp=False)
 
-        except Exception as e:
-            print(f"Exception during model fitting: {e}")
-            return None, None, None, None, None
+        train_predictions = model.fittedvalues
+        test_predictions = model.get_forecast(steps=len(test)).predicted_mean
 
+        train_metrics = self.calculate_metrics(train[target_column], train_predictions)
+        test_metrics = self.calculate_metrics(test[target_column], test_predictions)
+
+        return model, train_metrics, test_metrics, test_predictions, train_predictions
 
 #Hatalı, çıktı vermiyor.
     def fit_bsts(self, train, test, target_column, frequency, n_trials=12):
@@ -391,3 +393,38 @@ class StatisticalMethods:
         st.write(f"MAE: {metrics.get('MAE', 'Metric not available')}")
         st.write(f"MSE: {metrics.get('MSE', 'Metric not available')}")
         st.write(f"RMSE: {metrics.get('RMSE', 'Metric not available')}")
+
+
+def predict_future(model, data, frequency, periods):
+    """
+    Predict future values using a given model.
+
+    Parameters:
+    - model: Trained model to use for prediction.
+    - data: The data to base predictions on, typically recent historical data.
+    - frequency: Frequency of the data (e.g., 'D' for daily, 'W' for weekly).
+    - periods: The number of future periods to predict.
+
+    Returns:
+    - future_df: DataFrame containing predicted values for the specified future periods.
+    """
+    if model is None:
+        raise ValueError("The model is not trained or loaded properly.")
+
+    # Prepare data for prediction (e.g., last known data points)
+    last_data_point = data[-1:]
+
+    # Generate future dates based on the frequency of the original dataset
+    future_dates = pd.date_range(start=last_data_point.index[0], periods=periods + 1, freq=frequency)[1:]
+
+    # Use the model to predict the future periods
+    try:
+        future_predictions = model.predict(steps=periods)
+    except Exception as e:
+        raise RuntimeError(f"Prediction failed: {e}")
+
+    # Combine future dates with predictions into a DataFrame
+    future_df = pd.DataFrame({'Date': future_dates, 'Predicted': future_predictions})
+    future_df.set_index('Date', inplace=True)
+
+    return future_df

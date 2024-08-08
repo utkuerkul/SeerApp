@@ -9,7 +9,6 @@ import pandas as pd
 import datetime
 
 
-
 class FeatureEngineering:
     """
         Bu class'ın amacı verilen veri çerçevesinde, class'a ait olan fonksiyonları çağırıp,
