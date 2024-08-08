@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.express as px
 from statsmodels.tsa.seasonal import seasonal_decompose
 import numpy as np
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
 class DataVisualization:
     def timeseries_plot(self, df, date_column, target_column):
@@ -191,18 +192,14 @@ class DataVisualization:
         # Perform interpolation to handle missing values in the target column
         df[target_column_name] = df[target_column_name].interpolate(method='linear')
 
-        frequency = self.find_data_frequency
         # Automatically determine the frequency
         inferred_freq = pd.infer_freq(df.index)
-        if inferred_freq is None:
-            pass
-
-            return
-
         if inferred_freq:
             df = df.asfreq(inferred_freq)
-        elif frequency:
-            df = df.asfreq(frequency)
+        else:
+            frequency = self.find_data_frequency
+            if frequency:
+                df = df.asfreq(frequency)
 
         # Ensure the index frequency is set
         df.index.freq = inferred_freq
@@ -214,7 +211,7 @@ class DataVisualization:
             st.error(f"Decomposition failed: {e}")
             return
 
-        # Plotting
+        # Plotting decomposition
         fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
 
         axes[0].plot(df.index, df[target_column_name], label='Original')
@@ -238,6 +235,19 @@ class DataVisualization:
 
         plt.tight_layout()
         st.pyplot(fig)
+
+        # Plotting ACF and PACF
+        fig_acf, axes_acf = plt.subplots(2, 1, figsize=(12, 8))
+
+        plot_acf(df[target_column_name].dropna(), ax=axes_acf[0])
+        axes_acf[0].set_title('Autocorrelation Function')
+
+        plot_pacf(df[target_column_name].dropna(), ax=axes_acf[1])
+        axes_acf[1].set_title('Partial Autocorrelation Function')
+
+        plt.tight_layout()
+        st.pyplot(fig_acf)
+
         df.reset_index(inplace=True)
 
         # Automatic trend and seasonality detection

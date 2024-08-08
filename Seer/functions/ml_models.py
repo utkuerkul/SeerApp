@@ -120,7 +120,7 @@ class MachineLearningMethods:
                 "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 10.0),
             }
             model = XGBRegressor(**params)
-            model.set_params(early_stopping_rounds=500)
+            model.set_params(early_stopping_rounds=100)
             maes = []
             for train_index, val_index in tscv.split(X_train):
                 X_train_cv, X_val_cv = X_train[train_index], X_train[val_index]
@@ -132,7 +132,7 @@ class MachineLearningMethods:
             return np.mean(maes)
 
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=50)  # Increase number of trials for better optimization
+        study.optimize(objective, n_trials=15)  # Increase number of trials for better optimization
 
         best_params = study.best_params
         print("Best Parameters for XGBoost: ", best_params)
@@ -277,20 +277,8 @@ class MachineLearningMethods:
 
         return best_model, metrics, val_predictions, test_predictions
 
-    def fit_linear_regression(self, X_train, y_train, X_val, y_val, X_test, y_test):
-        """
-        Lineer Regresyon modelini eğitir ve doğrulama verisi üzerinde değerlendirir.
-        Args:
-            X_train (np.array): Eğitim özellikleri.
-            y_train (np.array): Eğitim hedef değişkeni.
-            X_val (np.array): Doğrulama özellikleri.
-            y_val (np.array): Doğrulama hedef değişkeni.
-            X_test (np.array): Test özellikleri.
-            y_test (np.array): Test hedef değişkeni.
+    def fit_sgd(self, X_train, y_train, X_val, y_val, X_test, y_test):
 
-        Returns:
-            model, metrics, predictions: Model, performans metrikleri ve tahminler.
-        """
         tscv = TimeSeriesSplit(n_splits=10)
 
         def objective(trial):

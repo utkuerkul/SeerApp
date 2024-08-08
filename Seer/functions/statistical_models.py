@@ -26,6 +26,8 @@ from optuna.pruners import SuccessiveHalvingPruner
 from tbats import TBATS
 from prophet import Prophet
 from bsts import BSTS
+import pmdarima as pm
+from pmdarima import auto_arima
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -139,11 +141,11 @@ class StatisticalMethods:
 
         return best_model, train_metrics, test_metrics, test_predictions, train_predictions
 
-    def fit_arima(self, train, test, target_column, n_trials=12):
+    def fit_arima(self, train, test, target_column, n_trials=50):
         def objective(trial):
-            p = trial.suggest_int('p', 0, 2)
-            d = trial.suggest_int('d', 0, 2)
-            q = trial.suggest_int('q', 0, 2)
+            p = trial.suggest_int('p', 0, 3)
+            d = trial.suggest_int('d', 0, 3)
+            q = trial.suggest_int('q', 0, 3)
 
             try:
                 model = ARIMA(train[target_column], order=(p, d, q)).fit()
@@ -173,150 +175,37 @@ class StatisticalMethods:
 
 #Çok uzun sürdüğü için train ve hiperparametre optimizasyonu çözüm bulana kadar çıkardım.
     def fit_sarimax(self, train, test, target_column, frequency, n_trials=12):
-        def objective(trial):
-            param = {
-                'order': (
-                    trial.suggest_int('p', 0, 2),
-                    trial.suggest_int('d', 0, 1),
-                    trial.suggest_int('q', 0, 2)
-                ),
-                'seasonal_order': (
-                    trial.suggest_int('P', 0, 2),
-                    trial.suggest_int('D', 0, 1),
-                    trial.suggest_int('Q', 0, 2),
-                    frequency
-                )
-            }
-
-            try:
-                model = SARIMAX(train[target_column], order=param['order'], seasonal_order=param['seasonal_order'])
-                fit_model = model.fit(disp=False, start_params=np.zeros(model.k_params))
-                test_predictions = fit_model.forecast(steps=len(test))
-                metrics = self.calculate_metrics(test[target_column], test_predictions)
-                return metrics['MAE']
-            except Exception as e:
-                print(f"Exception during model fitting: {e}")
-                return float("inf")
-
-        study = optuna.create_study(direction='minimize', pruner=optuna.pruners.MedianPruner())
-        study.optimize(objective, n_trials=n_trials, n_jobs=-1)
-
-        best_trial = study.best_trial
-        best_order = (best_trial.params['p'], best_trial.params['d'], best_trial.params['q'])
-        best_seasonal_order = (best_trial.params['P'], best_trial.params['D'], best_trial.params['Q'], frequency)
-
         try:
-            best_model = SARIMAX(train[target_column], order=best_order, seasonal_order=best_seasonal_order)
-            best_model = best_model.fit(disp=False, start_params=np.zeros(best_model.k_params))
-        except Exception as e:
-            print(f"Exception during final model fitting: {e}")
-            return None, None, None, None, None
-
-        train_predictions = best_model.fittedvalues
-        test_predictions = best_model.forecast(steps=len(test))
-
-        train_metrics = self.calculate_metrics(train[target_column], train_predictions)
-        test_metrics = self.calculate_metrics(test[target_column], test_predictions)
-
-        return best_model, train_metrics, test_metrics, test_predictions, train_predictions
-
-    def fit_prophet(self, train, test, target_column, n_trials=50):
-        def objective(trial):
-            params = {
-                'changepoint_prior_scale': trial.suggest_float('changepoint_prior_scale', 0.001, 0.5),
-                'seasonality_prior_scale': trial.suggest_float('seasonality_prior_scale', 0.001, 10.0),
-                'holidays_prior_scale': trial.suggest_float('holidays_prior_scale', 0.01, 10.0),
-                'seasonality_mode': trial.suggest_categorical('seasonality_mode', ['additive', 'multiplicative']),
-                'yearly_seasonality': trial.suggest_categorical('yearly_seasonality', [True, False]),
-                'weekly_seasonality': trial.suggest_categorical('weekly_seasonality', [True, False]),
-                'daily_seasonality': trial.suggest_categorical('daily_seasonality', [True, False]),
-                'add_hourly_seasonality': trial.suggest_categorical('add_hourly_seasonality', [True, False]),
-                'add_minute_seasonality': trial.suggest_categorical('add_minute_seasonality', [True, False]),
-                'n_changepoints': trial.suggest_int('n_changepoints', 10, 50),
-                'changepoint_range': trial.suggest_float('changepoint_range', 0.8, 0.95)
-            }
-
-            train_df = train[[target_column]].reset_index().rename(columns={'index': 'ds', target_column: 'y'})
-            test_df = test.reset_index().rename(columns={'index': 'ds', target_column: 'y'})
-
-            try:
-                train_df['ds'] = pd.to_datetime(train_df['ds'])
-                test_df['ds'] = pd.to_datetime(test_df['ds'])
-            except Exception as e:
-                print(f"Date conversion error: {e}")
-                return float("inf")
-
-            model = Prophet(
-                changepoint_prior_scale=params['changepoint_prior_scale'],
-                seasonality_prior_scale=params['seasonality_prior_scale'],
-                holidays_prior_scale=params['holidays_prior_scale'],
-                seasonality_mode=params['seasonality_mode'],
-                yearly_seasonality=params['yearly_seasonality'],
-                weekly_seasonality=params['weekly_seasonality'],
-                daily_seasonality=params['daily_seasonality'],
-                n_changepoints=params['n_changepoints'],
-                changepoint_range=params['changepoint_range']
+            # Use auto_arima to find the best parameters
+            best_model = auto_arima(
+                train[target_column],
+                seasonal=True,
+                m=frequency,  # frequency (seasonality)
+                stepwise=True,
+                suppress_warnings=True,
+                error_action='ignore',  # Ignore errors and continue searching
+                trace=False,
+                n_jobs=-1,  # Run in parallel
+                scoring='mae'  # Optimize based on MAE
             )
 
-            if params['add_hourly_seasonality']:
-                model.add_seasonality(name='hourly', period=24, fourier_order=3)
-            if params['add_minute_seasonality']:
-                model.add_seasonality(name='minute', period=60, fourier_order=3)
+            # Fit the best model
+            best_model.fit(train[target_column])
 
-            try:
-                model.fit(train_df)
-                future = test_df[['ds']].copy()
-                forecast = model.predict(future)
-                test_predictions = forecast['yhat'].values
+            # Get predictions
+            train_predictions = best_model.predict_in_sample()
+            test_predictions = best_model.predict(n_periods=len(test))
 
-                metrics = self.calculate_metrics(test_df['y'], test_predictions)
-                return metrics['MAE']
-            except Exception as e:
-                print(f"Exception during model fitting: {e}")
-                return float("inf")
+            # Calculate metrics
+            train_metrics = self.calculate_metrics(train[target_column], train_predictions)
+            test_metrics = self.calculate_metrics(test[target_column], test_predictions)
 
-        study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=n_trials)
+            return best_model, train_metrics, test_metrics, test_predictions, train_predictions
 
-        best_params = study.best_params
+        except Exception as e:
+            print(f"Exception during model fitting: {e}")
+            return None, None, None, None, None
 
-        train_df = train[[target_column]].reset_index().rename(columns={'index': 'ds', target_column: 'y'})
-        test_df = test.reset_index().rename(columns={'index': 'ds', target_column: 'y'})
-
-        train_df['ds'] = pd.to_datetime(train_df['ds'], errors='coerce')
-        test_df['ds'] = pd.to_datetime(test_df['ds'], errors='coerce')
-
-        train_df = train_df.dropna(subset=['ds'])
-        test_df = test_df.dropna(subset=['ds'])
-
-        best_model = Prophet(
-            changepoint_prior_scale=best_params['changepoint_prior_scale'],
-            seasonality_prior_scale=best_params['seasonality_prior_scale'],
-            holidays_prior_scale=best_params['holidays_prior_scale'],
-            seasonality_mode=best_params['seasonality_mode'],
-            yearly_seasonality=best_params['yearly_seasonality'],
-            weekly_seasonality=best_params['weekly_seasonality'],
-            daily_seasonality=best_params['daily_seasonality'],
-            n_changepoints=best_params['n_changepoints'],
-            changepoint_range=best_params['changepoint_range']
-        )
-
-        if best_params['add_hourly_seasonality']:
-            best_model.add_seasonality(name='hourly', period=24, fourier_order=3)
-        if best_params['add_minute_seasonality']:
-            best_model.add_seasonality(name='minute', period=60, fourier_order=3)
-
-        best_model.fit(train_df)
-
-        train_predictions = best_model.predict(train_df)['yhat'].values
-        future = test_df[['ds']].copy()
-        forecast = best_model.predict(future)
-        test_predictions = forecast['yhat'].values
-
-        train_metrics = self.calculate_metrics(train_df['y'], train_predictions)
-        test_metrics = self.calculate_metrics(test_df['y'], test_predictions)
-
-        return best_model, train_metrics, test_metrics, test_predictions, train_predictions
 
 #Hatalı, çıktı vermiyor.
     def fit_bsts(self, train, test, target_column, frequency, n_trials=12):
