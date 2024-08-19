@@ -107,28 +107,33 @@ class StatisticalMethods:
         return metrics
 
     def fit_exponential_smoothing(self, train, test, target_column):
-        trends = [None, 'add', 'mul']
-        seasonals = [None, 'add', 'mul']
-        seasonal_periods_options = [2, 3, 7, 12, 30, 52, 365]
+        def objective(trial):
+            trend = trial.suggest_categorical('trend', [None, 'add', 'mul'])
+            seasonal = trial.suggest_categorical('seasonal', [None, 'add', 'mul'])
+            seasonal_periods = trial.suggest_int('seasonal_periods', 2, 365)
 
-        best_score = float('inf')
-        best_params = None
-        best_model = None
-
-        for trend, seasonal, seasonal_periods in product(trends, seasonals, seasonal_periods_options):
             try:
                 model = ExponentialSmoothing(train[target_column], trend=trend, seasonal=seasonal,
                                              seasonal_periods=seasonal_periods).fit()
                 test_predictions = model.forecast(steps=len(test))
                 score = mean_absolute_error(test[target_column], test_predictions)
-
-                if score < best_score:
-                    best_score = score
-                    best_params = {'trend': trend, 'seasonal': seasonal, 'seasonal_periods': seasonal_periods}
-                    best_model = model
-
             except Exception as e:
-                print(f"Exception occurred for parameters (trend={trend}, seasonal={seasonal}, seasonal_periods={seasonal_periods}): {e}")
+                score = float('inf')  # In case of an exception, set a high score
+                print(f"Exception occurred: {e}")
+
+            return score
+
+        # Optimize the objective function
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=20)
+
+        best_params = study.best_params
+        print("Best Parameters: ", best_params)
+
+        # Train the final model with the best parameters
+        best_model = ExponentialSmoothing(train[target_column], trend=best_params['trend'],
+                                          seasonal=best_params['seasonal'],
+                                          seasonal_periods=best_params['seasonal_periods']).fit()
 
         train_predictions = best_model.fittedvalues
         test_predictions = best_model.forecast(steps=len(test))
@@ -137,8 +142,7 @@ class StatisticalMethods:
         test_metrics = self.calculate_metrics(test[target_column], test_predictions)
 
         return best_model, train_metrics, test_metrics, test_predictions, train_predictions
-
-    def fit_arima(self, train, test, target_column, n_trials=50):
+    def fit_arima(self, train, test, target_column, n_trials=20):
         def objective(trial):
             p = trial.suggest_int('p', 0, 3)
             d = trial.suggest_int('d', 0, 3)
@@ -172,10 +176,10 @@ class StatisticalMethods:
 #Çok uzun sürdüğü için train ve hiperparametre optimizasyonu çözüm bulana kadar çıkardım.
     def fit_sarimax(self, train, test, target_column, frequency_int, n_trials=10):
         def objective(trial):
-            p = trial.suggest_int('p', 0, 2)  # Narrowed range
+            p = trial.suggest_int('p', 0, 1)  # Narrowed range
             d = trial.suggest_int('d', 0, 1)  # Narrowed range
-            q = trial.suggest_int('q', 0, 2)  # Narrowed range
-            P = trial.suggest_int('P', 0, 2)  # Narrowed range
+            q = trial.suggest_int('q', 0, 1)  # Narrowed range
+            P = trial.suggest_int('P', 0, 1)  # Narrowed range
             D = trial.suggest_int('D', 0, 1)  # Narrowed range
             Q = trial.suggest_int('Q', 0, 1)  # Narrowed range
             s = frequency_int  # frequency_int doğrudan kullanılıyor
@@ -300,7 +304,7 @@ class StatisticalMethods:
             frequency (str, optional): Frequency of the time series data.
 
         Returns:
-            None
+            go.Figure: Plotly figure object.
         """
         if date_column not in df.columns:
             raise ValueError(f"'{date_column}' column not found in DataFrame.")
@@ -375,11 +379,8 @@ class StatisticalMethods:
             yaxis=dict(title='Value')
         )
 
-        # Display the DataFrame and plot in Streamlit
-        with st.expander(f"{model_name} Predictions and Real Values Dataframe:"):
-            st.write(result_df)
-
-        st.plotly_chart(fig)
+        # Return the Plotly figure object
+        return fig
 
     def display_metrics(self, metrics, stage):
         """
@@ -394,37 +395,38 @@ class StatisticalMethods:
         st.write(f"MSE: {metrics.get('MSE', 'Metric not available')}")
         st.write(f"RMSE: {metrics.get('RMSE', 'Metric not available')}")
 
+    def predict_future(self, model, data, date_column, periods, frequency):
+        """
+        Eğitilmiş bir model kullanarak belirli bir periyod kadar gelecekteki değerleri tahmin eder.
 
-def predict_future(model, data, frequency, periods):
-    """
-    Predict future values using a given model.
+        Args:
+        - model: Eğitilmiş model (örneğin ARIMA, SARIMA, XGBoost, vb.).
+        - data: Geçmiş veriler (eğitim verisi).
+        - date_column: Tarih sütununun adı.
+        - periods: Kullanıcının belirttiği periyot sayısı (kaç adım ileriye tahmin yapılacak).
+        - frequency: Verilerin frekansı (örneğin 'D' günlük, 'M' aylık, 'Y' yıllık, vb.).
 
-    Parameters:
-    - model: Trained model to use for prediction.
-    - data: The data to base predictions on, typically recent historical data.
-    - frequency: Frequency of the data (e.g., 'D' for daily, 'W' for weekly).
-    - periods: The number of future periods to predict.
+        Returns:
+        - predictions_df: Gelecekteki tahminleri içeren bir DataFrame.
+        """
+        # Ensure that the date column is in datetime format
+        if not pd.api.types.is_datetime64_any_dtype(data[date_column]):
+            data[date_column] = pd.to_datetime(data[date_column])
 
-    Returns:
-    - future_df: DataFrame containing predicted values for the specified future periods.
-    """
-    if model is None:
-        raise ValueError("The model is not trained or loaded properly.")
+        # Son veri tarihini al
+        last_date = data[date_column].max()
 
-    # Prepare data for prediction (e.g., last known data points)
-    last_data_point = data[-1:]
+        # Gelecek tarihleri oluştur
+        future_dates = pd.date_range(start=last_date, periods=periods + 1, freq=frequency)[1:]
 
-    # Generate future dates based on the frequency of the original dataset
-    future_dates = pd.date_range(start=last_data_point.index[0], periods=periods + 1, freq=frequency)[1:]
+        # Model ile tahmin yap
+        if hasattr(model, 'forecast'):
+            # ARIMA, SARIMA gibi modeller için
+            future_predictions = model.forecast(steps=periods)
+        else:
+            # Diğer modeller için
+            future_predictions = model.predict(periods)
 
-    # Use the model to predict the future periods
-    try:
-        future_predictions = model.predict(steps=periods)
-    except Exception as e:
-        raise RuntimeError(f"Prediction failed: {e}")
-
-    # Combine future dates with predictions into a DataFrame
-    future_df = pd.DataFrame({'Date': future_dates, 'Predicted': future_predictions})
-    future_df.set_index('Date', inplace=True)
-
-    return future_df
+        # Tahminleri DataFrame olarak düzenle
+        predictions_df = pd.DataFrame({'Date': future_dates, 'Predictions': future_predictions})
+        predictions_df.set_index('Date', inplace=True)

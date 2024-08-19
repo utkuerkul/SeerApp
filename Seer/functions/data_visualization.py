@@ -192,14 +192,18 @@ class DataVisualization:
         # Perform interpolation to handle missing values in the target column
         df[target_column_name] = df[target_column_name].interpolate(method='linear')
 
+        frequency = self.find_data_frequency
         # Automatically determine the frequency
         inferred_freq = pd.infer_freq(df.index)
+        if inferred_freq is None:
+            pass
+
+            return
+
         if inferred_freq:
             df = df.asfreq(inferred_freq)
-        else:
-            frequency = self.find_data_frequency
-            if frequency:
-                df = df.asfreq(frequency)
+        elif frequency:
+            df = df.asfreq(frequency)
 
         # Ensure the index frequency is set
         df.index.freq = inferred_freq
@@ -211,7 +215,7 @@ class DataVisualization:
             st.error(f"Decomposition failed: {e}")
             return
 
-        # Plotting decomposition
+        # Plotting
         fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
 
         axes[0].plot(df.index, df[target_column_name], label='Original')
@@ -235,19 +239,6 @@ class DataVisualization:
 
         plt.tight_layout()
         st.pyplot(fig)
-
-        # Plotting ACF and PACF
-        fig_acf, axes_acf = plt.subplots(2, 1, figsize=(12, 8))
-
-        plot_acf(df[target_column_name].dropna(), ax=axes_acf[0])
-        axes_acf[0].set_title('Autocorrelation Function')
-
-        plot_pacf(df[target_column_name].dropna(), ax=axes_acf[1])
-        axes_acf[1].set_title('Partial Autocorrelation Function')
-
-        plt.tight_layout()
-        st.pyplot(fig_acf)
-
         df.reset_index(inplace=True)
 
         # Automatic trend and seasonality detection
@@ -315,3 +306,52 @@ class DataVisualization:
             return True
         else:
             return False
+
+    def predict_future(self, model, data, date_column, periods, frequency):
+        """
+        Eğitilmiş bir model kullanarak belirli bir periyod kadar gelecekteki değerleri tahmin eder.
+
+        Args:
+        - model: Eğitilmiş model (örneğin ARIMA, SARIMA, XGBoost, vb.).
+        - data: Geçmiş veriler (eğitim verisi).
+        - date_column: Tarih sütununun adı.
+        - periods: Kullanıcının belirttiği periyot sayısı (kaç adım ileriye tahmin yapılacak).
+        - frequency: Verilerin frekansı (örneğin 'D' günlük, 'M' aylık, 'Y' yıllık, vb.).
+
+        Returns:
+        - predictions_df: Gelecekteki tahminleri içeren bir DataFrame.
+        """
+        # Ensure that the date column is in datetime format
+        if not pd.api.types.is_datetime64_any_dtype(data[date_column]):
+            data[date_column] = pd.to_datetime(data[date_column])
+
+        # Son veri tarihini al
+        last_date = data[date_column].max()
+
+        # Gelecek tarihleri oluştur
+        future_dates = pd.date_range(start=last_date, periods=periods + 1, freq=frequency)[1:]
+
+        # Model ile tahmin yap
+        if hasattr(model, 'forecast'):
+            # ARIMA, SARIMA gibi modeller için
+            future_predictions = model.forecast(steps=periods)
+        else:
+            # Diğer modeller için
+            future_predictions = model.predict(periods)
+
+        # Tahminleri DataFrame olarak düzenle
+        predictions_df = pd.DataFrame({'Date': future_dates, 'Predictions': future_predictions})
+        predictions_df.set_index('Date', inplace=True)
+
+        return predictions_df
+    def display_model_results(self, model, train_predictions, test_predictions, title):
+        fig = go.Figure()
+
+        # Eğitim verisi ve tahminleri
+        fig.add_trace(go.Scatter(x=train_predictions.index, y=train_predictions, mode='lines', name='Train Predictions'))
+
+        # Test verisi ve tahminleri
+        fig.add_trace(go.Scatter(x=test_predictions.index, y=test_predictions, mode='lines', name='Test Predictions'))
+
+        fig.update_layout(title=title, xaxis_title='Date', yaxis_title='Values')
+        st.plotly_chart(fig)
