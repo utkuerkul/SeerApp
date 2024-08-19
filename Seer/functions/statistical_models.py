@@ -125,7 +125,7 @@ class StatisticalMethods:
 
         # Optimize the objective function
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=20)
+        study.optimize(objective, n_trials=40)
 
         best_params = study.best_params
         print("Best Parameters: ", best_params)
